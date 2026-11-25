@@ -1,0 +1,212 @@
+---
+title: "Elyx Development and Build"
+source: "https://plugins.exteragram.app/docs/elyx/development"
+---
+
+[Elyx](</docs/elyx>)
+
+# Development and Build
+
+Develop on a PC, synchronize changes to a phone, build archives, and debug reloads.
+
+# Development and build
+
+The productive Elyx loop is:
+
+  1. edit the complete project on a PC
+  2. synchronize changed files to the installed plugin directory
+  3. let Elyx unload and reload the plugin
+  4. inspect errors and continue editing
+
+## Prerequisites
+
+  * a recent exteraGram build with plugin support
+  * the current plugin SDK available to the IDE
+  * Python 3.11 for bytecode-compatible builds
+  * ADB when connecting a USB device or emulator
+  * an Elyx archive installed once on the device
+
+Enable the plugin engine and developer mode in exteraGram's plugin settings. The built-in development server listens on `127.0.0.1:42690` by default.
+
+## Connect over ADB
+
+Forward the phone's loopback server to the PC:
+
+```python
+adb forward tcp:42690 tcp:42690
+```
+
+Verify the device first if needed:
+
+```python
+adb devices
+```
+
+Only one process can use a local forwarded port. Remove and recreate the forward if another device was previously connected:
+
+```python
+adb forward --remove tcp:42690
+adb forward tcp:42690 tcp:42690
+```
+
+## Initial installation
+
+The structured live-reload protocol updates an Elyx plugin which is already known to the running engine. Before starting a watcher:
+
+  1. build an `.elyx` or `.eaf` archive
+  2. install it through exteraGram
+  3. enable it at least once
+  4. confirm that its `id` matches local `metainfo`
+
+## Custom `elyx_dev_client.py`
+
+Use the custom client from the project root. Client revisions may expose different flags, so inspect the script's own help:
+
+```python
+python elyx_dev_client.py --help
+```
+
+A client normally needs:
+
+  * server host and port, usually `127.0.0.1:42690` after ADB forwarding
+  * the local project root
+  * the plugin `id`
+  * ignore patterns for `.git`, `.elyx`, `builds`, `__pycache__`, and IDE files
+
+The intended behavior is incremental: compare file hashes, send created, modified, moved, and deleted paths, then wait for the engine to reload the plugin.
+
+> > [!NOTE] **The client is not bundled in this SDK repository** > Keep the client version used by your team alongside the plugin or in a shared development-tools repository. Its command-line interface is not part of the runtimeelyxAPI.
+
+## Development protocol reference
+
+The server exchanges consecutive JSON objects over a TCP connection. Elyx commands use:
+
+  * `@` for the action name
+  * `#` for the request id
+  * `data` for base64-encoded, zlib-compressed JSON
+
+Supported Elyx actions:
+
+Action| Purpose  
+---|---  
+`elyx_ping`| Check that the Elyx server patch is active  
+`get_elyx_plugins`| Return metadata for loaded Elyx plugins  
+`elyx_compare_folder`| Compare client hashes with installed files  
+`elyx_changes`| Apply file changes and reload a plugin  
+  
+Low-level tools should keep request ids unique and wait for the response with the matching `#`.
+
+### Change records
+
+An `elyx_changes` payload contains:
+
+```json
+{
+  "plugin_id": "elyx_hello",
+  "changes": [
+    {
+      "#": "modified",
+      "path": "main.py",
+      "is_directory": false,
+      "content": "<base64 file bytes>"
+    }
+  ]
+}
+```
+
+Event types are:
+
+  * `created`
+  * `modified`
+  * `deleted`
+  * `moved`
+
+Created and modified files carry base64-encoded bytes. Moved entries use `path` and `dest_path`. Paths are relative to the plugin root.
+
+After applying the batch, Elyx unloads the plugin, clears its imported modules, loads the project again, and reports `success` plus an `errors` list.
+
+## Build with ElyxBuilder
+
+ElyxBuilder can generate the entire initial project as well as package it:
+
+```bash
+python -m pip install --upgrade ElyxBuilder
+elyb new
+```
+
+Run it from the directory containing `refmap.yml`:
+
+```python
+elyb build --ast -v -nf
+```
+
+For a compiled Python 3.11 build:
+
+```python
+elyb build -c 2 -v -nf
+```
+
+See [ElyxBuilder](</docs/elyx/elyxbuilder>) for `elyb new`, watch mode, incremental compilation, ignore lists, project statistics, and the official ElyxBuilder documentation.
+
+> > [!NOTE] **Build with Python 3.11** > The phone runtime in this SDK is Python 3.11. Use Python 3.11 whenever the release contains.pycfiles.
+
+## Build a plain archive
+
+For source distributions, any ZIP tool is enough when it preserves paths. Archive the project contents so `refmap.yml` is at the ZIP root, then rename the result:
+
+```python
+my_plugin.zip -> my_plugin.elyx
+```
+
+Before publishing, inspect the archive:
+
+```python
+refmap.yml
+metainfo.yml
+main.py
+src/...
+assets/...
+strings/...
+```
+
+Do not ship:
+
+  * `.git/`
+  * `.elyx/cache/`
+  * `builds/`
+  * `__pycache__/`
+  * desktop virtual environments
+  * secrets, API keys, signing material, or local logs
+
+## Reload-safe code
+
+Elyx clears local Python modules, hooks, and menu items. Your plugin remains responsible for resources it creates:
+
+```python
+class ReloadSafePlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.closed = False
+        self.worker = create_worker()
+        self.worker.start()
+ 
+    def on_plugin_unload(self):
+        self.closed = True
+        if self.worker:
+            self.worker.stop()
+            self.worker = None
+```
+
+Avoid starting permanent work at module import time. Put initialization in `on_plugin_load` and cleanup in `on_plugin_unload`.
+
+## Release checklist
+
+  * install from a clean archive, not only through live reload
+  * test the default locale and English fallback
+  * test with missing network access when dependencies are involved
+  * disable and re-enable the plugin
+  * update from the previous public version
+  * verify every declared asset and localization path
+  * inspect the archive root for accidental wrapper directories
+  * confirm `id`, version constraints, and dependency links
+
+[PreviousDependencies](</docs/elyx/dependencies>)[NextPublic API](</docs/elyx/public-api>)
